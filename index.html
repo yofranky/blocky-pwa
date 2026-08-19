@@ -43,14 +43,14 @@
   }
   *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; user-select:none; -webkit-touch-callout:none; -webkit-user-drag:none; }
   html,body{
-    margin:0; padding:0; width:100%; height:100%; overflow:hidden;
+    margin:0; padding:0; width:100%; height:100%; height:-webkit-fill-available; overflow:hidden;
     position:fixed; touch-action:none;
     font-family: var(--body-font);
     color:var(--ink);
-    background:#9be0ff;
+    background:#E9FBD8;
     transition:filter .5s ease;
   }
-  #app{ width:100%; height:100%; position:relative; }
+  #app{ width:100%; height:100%; height:-webkit-fill-available; position:relative; }
 
   /* ---------- SPLASH ---------- */
   #splash{
@@ -277,6 +277,47 @@
   }
   @keyframes confettiFall{ 0%{ opacity:1; transform:translateY(0) rotate(0deg);} 100%{ opacity:0; transform:translateY(160px) rotate(420deg);} }
 
+  /* --- NEW: screen flash overlay for big combos --- */
+  .screen-flash{
+    position:absolute; inset:0; z-index:60;
+    background:rgba(255,255,255,0.8); border-radius:14px;
+    animation:flashFade .3s ease-out forwards;
+  }
+  @keyframes flashFade{ 0%{ opacity:.8; } 100%{ opacity:0; } }
+
+  /* --- NEW: particle burst for ultra clears --- */
+  .particle-burst{
+    position:absolute; width:14px; height:14px; border-radius:50%; pointer-events:none; z-index:66;
+    animation:particleFly 1.2s ease-out forwards;
+  }
+  @keyframes particleFly{ 0%{ opacity:1; transform:scale(1) rotate(0deg); } 100%{ opacity:0; transform:scale(0.3) rotate(420deg); } }
+
+  /* --- NEW: screen shake for Tetris --- */
+  @keyframes shake{
+    0%,100%{ transform:translate(0,0); }
+    10%{ transform:translate(-3px,2px); }
+    20%{ transform:translate(3px,-2px); }
+    30%{ transform:translate(-2px,3px); }
+    40%{ transform:translate(2px,-3px); }
+    50%{ transform:translate(-1px,1px); }
+    60%{ transform:translate(1px,-1px); }
+    70%{ transform:translate(-2px,2px); }
+    80%{ transform:translate(2px,-2px); }
+    90%{ transform:translate(-1px,1px); }
+  }
+
+  /* --- NEW: combo badge HUD --- */
+  #combo-badge{
+    position:absolute; top:14%; left:50%; transform:translateX(-50%);
+    z-index:55; pointer-events:none; opacity:0;
+    background:rgba(255,215,0,0.9); color:#2B2147;
+    font-family: var(--display-font); font-weight:800; font-size:1.4rem;
+    padding:8px 22px; border-radius:20px;
+    text-shadow:0 2px 0 rgba(0,0,0,0.15);
+    transition:opacity .3s ease;
+  }
+  #combo-badge.show{ opacity:1; }
+
   #go-mascot{ width:110px; height:100px; margin-bottom:.6rem; }
   .go-msg{ font-weight:700; opacity:.85; margin:6px 0 4px; text-align:center; }
   .go-score{ font-family: var(--display-font); font-size:2.2rem; font-weight:800; margin:.2rem 0 1rem; }
@@ -363,7 +404,7 @@
     <div class="settings-section-title">🧩 Shape KAOS</div>
     <div class="panel-card" id="shapekaos-picker"></div>
 
-    <button class="btn" onclick="ui.saveAndExit()" style="margin-top:14px">SAVE &amp; PLAY</button>
+    <button class="btn" onclick="ui.saveAndExit()" style="margin-top:14px">SAVE & PLAY</button>
     <div style="font-size:.65rem; opacity:.4; margin-top:.6rem;">Blocky is made by BKAOS</div>
   </div>
 
@@ -552,7 +593,20 @@ const sound = {
   drop(){ this.tone(150,0.12,'sawtooth',0.14,60); },
   lock(){ this.tone(220,0.07,'sine',0.1); },
   clear(n){ const base=520; for(let i=0;i<Math.min(n,4);i++){ setTimeout(()=>this.tone(base+i*120,0.12,'triangle',0.16),i*70); } },
-  gameover(){ this.tone(300,0.18,'sawtooth',0.15,90); setTimeout(()=>this.tone(180,0.3,'sawtooth',0.12,60),150); }
+  gameover(){ this.tone(300,0.18,'sawtooth',0.15,90); setTimeout(()=>this.tone(180,0.3,'sawtooth',0.12,60),150); },
+  tetris(){
+    // Celebration arpeggio: C5 - E5 - G5 - C6
+    const notes = [523, 659, 784, 1047];
+    notes.forEach((freq,i)=>{ setTimeout(()=>this.tone(freq,0.15,'sine',0.12), i*80); });
+  },
+  ultraClear(){
+    // Epic rising glissando then fall
+    this.tone(300,0.1,'sawtooth',0.15,800);
+    setTimeout(()=>{
+      this.tone(800,0.1,'sawtooth',0.15,1200);
+      setTimeout(()=>this.tone(400,0.3,'sawtooth',0.12,600), 100);
+    }, 100);
+  }
 };
 
 function vibrate(ms){ if(!Settings.data.haptics) return; if(navigator.vibrate){ try{ navigator.vibrate(ms); }catch(e){} } }
@@ -571,6 +625,7 @@ class GameEngine{
     this.isPaused = false;
     this.isGameOver = true;
     this.rafId = null;
+    this.comboCount = 0;
 
     this.paletteKey = localStorage.getItem('blocky_palette') || 'rainbow';
     if(!PALETTES[this.paletteKey]) this.paletteKey = 'rainbow';
@@ -689,6 +744,7 @@ class GameEngine{
   reset(){
     this.board = Array.from({length:this.rows}, ()=>Array(this.cols).fill(0));
     this.score = 0; this.level = 1; this.linesCleared = 0;
+    this.comboCount = 0;
     this.isGameOver = false; this.isPaused = false;
     this.dropCounter = 0; this.dropInterval = 850;
     this.bag = this.makeBag();
@@ -797,6 +853,7 @@ class GameEngine{
     this.drawNext();
     if(this.collide(this.active)) this.endGame();
     if(cleared>0) this.onLinesCleared(cleared);
+    else this.comboCount = 0;
   }
 
   clearLines(){
@@ -821,11 +878,50 @@ class GameEngine{
   }
 
   onLinesCleared(n){
-    sound.clear(n); vibrate(n>=4?60:30);
+    // Track combo: consecutive line clears
+    this.comboCount = (this.comboCount || 0) + 1;
+    const combo = this.comboCount;
+
+    sound.clear(n);
+    vibrate(n>=4 ? 60 : 30);
+
     const labels = {1:'NICE!',2:'DOUBLE!',3:'TRIPLE!',4:'BLOCKY!! 🎉'};
     const label = labels[n] || 'AWESOME!';
     spawnFloatText(label);
-    if(n>=2 && !Settings.data.reduceMotion) spawnConfetti(this.activeColors(), n>=4?28:16);
+
+    // Combo multiplier text (for 2+ consecutive clears)
+    if(combo >= 2 && !Settings.data.reduceMotion){
+      spawnFloatText(`COMBO x${combo}!`, true, '#FFD700');
+      updateComboBadge(combo);
+    }
+
+    // Escalating effects based on lines cleared
+    if(n >= 4){
+      // Tetris! — big celebration
+      if(!Settings.data.reduceMotion){
+        spawnConfetti(this.activeColors(), 40);
+        spawnParticleBurst(this.activeColors(), 60);
+        screenFlash('#fff', 300);
+        screenShake(12, 300);
+      }
+      sound.tetris();
+      vibrate([30, 30, 30, 30]);
+      spawnFloatText('TETRIS! 🧱', false, '#FFD700');
+      // Keep-playing hook
+      setTimeout(() => spawnFloatText('↗️ Keep stacking!', false, '#fff'), 600);
+    } else if(n >= 2){
+      if(!Settings.data.reduceMotion) spawnConfetti(this.activeColors(), n>=4?28:16);
+    }
+
+    // Ultra-rare: 5+ lines
+    if(n >= 5 && !Settings.data.reduceMotion){
+      spawnParticleBurst(this.activeColors(), 100);
+      screenFlash('#FFD700', 500);
+      screenShake(20, 500);
+      sound.ultraClear();
+      vibrate([50, 30, 50, 30, 50]);
+    }
+
     mascotPulse('happy');
     announce(`${label} ${n} line${n>1?'s':''} cleared. Score ${this.score}.`);
   }
@@ -973,12 +1069,15 @@ function hideZoneHint(){
   if(hint) hint.classList.remove('show');
 }
 
-function spawnFloatText(text){
+function spawnFloatText(text, offset=false, color=null){
   const stage = document.getElementById('game-stage');
   const el = document.createElement('div');
   el.className = 'float-text';
   el.innerText = text;
-  el.style.left = '50%'; el.style.top = '38%'; el.style.transform = 'translateX(-50%)';
+  el.style.left = '50%';
+  el.style.top = offset ? '28%' : '38%';
+  el.style.transform = 'translateX(-50%)';
+  if(color) el.style.color = color;
   stage.appendChild(el);
   setTimeout(()=>el.remove(), 1050);
 }
@@ -998,6 +1097,57 @@ function spawnConfetti(colors, count){
   }
 }
 
+// --- NEW: particle burst for ultra clears ---
+function spawnParticleBurst(colors, count){
+  const stage = document.getElementById('game-stage');
+  const rect = stage.getBoundingClientRect();
+  for(let i=0;i<count;i++){
+    const el = document.createElement('div');
+    el.className = 'particle-burst';
+    el.style.background = colors[Math.floor(Math.random()*colors.length)];
+    const angle = Math.random() * Math.PI * 2;
+    const distance = Math.random() * 100 + 40;
+    const x = Math.cos(angle) * distance;
+    const y = Math.sin(angle) * distance;
+    el.style.left = (rect.width/2 + x) + 'px';
+    el.style.top = (rect.height/2 + y) + 'px';
+    el.style.animationDelay = (Math.random()*0.15)+'s';
+    stage.appendChild(el);
+    setTimeout(()=>el.remove(), 1200);
+  }
+}
+
+// --- NEW: screen flash overlay ---
+function screenFlash(color, duration){
+  const stage = document.getElementById('game-stage');
+  const overlay = document.createElement('div');
+  overlay.className = 'screen-flash';
+  overlay.style.background = color;
+  stage.appendChild(overlay);
+  setTimeout(()=>overlay.remove(), duration);
+}
+
+// --- NEW: screen shake ---
+function screenShake(intensity, duration){
+  const stage = document.getElementById('game-stage');
+  stage.style.animation = `shake ${duration}ms ease-in-out`;
+  setTimeout(()=>stage.style.animation = '', duration);
+}
+
+// --- NEW: combo badge HUD ---
+function updateComboBadge(combo){
+  let badge = document.getElementById('combo-badge');
+  if(!badge){
+    badge = document.createElement('div');
+    badge.id = 'combo-badge';
+    document.getElementById('game-stage').appendChild(badge);
+  }
+  badge.innerText = `🔥 COMBO x${combo}`;
+  badge.classList.add('show');
+  clearTimeout(badge._hideTimer);
+  badge._hideTimer = setTimeout(()=>badge.classList.remove('show'), 2000);
+}
+
 // "Share My Top Score" was wired to a function that never existed — button did
 // nothing but throw a script error when tapped. Fixed: uses the native Share
 // sheet when available, falls back to clipboard, falls back to an on-screen
@@ -1005,9 +1155,9 @@ function spawnConfetti(colors, count){
 // except through whatever share target the OS sheet takes it to.
 function shareHighScore(){
   if(!game.highScores.length) return;
-  const text = `I scored ${game.highScores[0]} pts in Blocky! 🧱`;
+  const text = `I scored ${game.highScores[0]} pts in Blocky! 🧱 Play at https://yofranky.github.io/blocky-pwa/`;
   if(navigator.share){
-    navigator.share({ text, title: 'Blocky' }).catch(()=>{});
+    navigator.share({ text, title: 'Blocky', url: 'https://yofranky.github.io/blocky-pwa/' }).catch(()=>{});
   } else if(navigator.clipboard && navigator.clipboard.writeText){
     navigator.clipboard.writeText(text)
       .then(()=>showToast('Copied to clipboard!'))
